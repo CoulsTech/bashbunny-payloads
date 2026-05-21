@@ -8,10 +8,9 @@
 
 # Setup
 LED SETUP
-ATTACKMODE HID SERIAL
+ATTACKMODE HID
 
 # Configuration
-COM_PORT="NULL"
 BAUD="115200"
 DATA_BITS="8"
 PARITY_BIT="No"
@@ -19,16 +18,15 @@ STOP_BIT="1"
 FLOW_CONTROL="N"
 BUNNY_USER="root"
 BUNNY_PASS="hak5bunny"
-
+COM_SLEEP="5"
 # (to do) Install putty if not installed
 
-RUN WIN "powershell -WindowStyle Hidden -Command [System.IO.Ports.SerialPort::getportnames()
-# (to do) define COM_PORT to catch the COM port from the victim machine
-
-QUACK DELAY 10
-if [$COM_PORT="NULL"]; then
-    LED FAIL
-else
-    RUN WIN "putty.exe -serial $COM_PORT -sercfg $BAUD,$DATA_BITS,$PARITY_BIT,$STOP_BIT,$FLOW_CONTROL"
-    LED FINISH
-fi
+# Payload
+RUN WIN "powershell -NoExit"
+QUACK "$PRESERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); Start-Sleep -Seconds 1; $POSTSERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); $BUNNYCOM = (Compare-Object $PRESERIALBUNNY $POSTSERIALBUNNY | Where-Object { $_.SideIndicator -eq '=>' }).InputObject"
+QUACK ENTER
+ATTACKMODE HID SERIAL #5 Second race for the A-B math (needs better solution)
+QUACK DELAY "$COM_SLEEP*1000" (ms to second conversion)
+QUACK "putty.exe -serial $BUNNYCOM -sercfg $BAUD,$DATA_BITS,$PARITY_BIT,$STOP_BIT,$FLOW_CONTROL"
+QUACK ENTER
+LED FINISH
