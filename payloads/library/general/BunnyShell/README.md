@@ -1,4 +1,4 @@
-# Putty Bunny
+# Bunny Shell
 
 Author CoulsTech
 Version 0.1
@@ -12,4 +12,4 @@ default (leave these alone unless connecting to something other than bash bunny)
 
 ## Requirements
 Windows,
-Putty Installed
+PowerShell Installed

