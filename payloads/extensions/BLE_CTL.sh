@@ -3,314 +3,364 @@
 # Title: BLE_CTL Extension
 # Description: Bluetooth Low Energy control for EBYTE E104-BT52 modules
 # Author: CoulsTech
-# Version: 1.0
+# Version: 1.2
 # Category: Extension
 
-# Extension variables
-BLE_DEVICE="/dev/ttyACM0"
-BLE_BAUD="115200"
+BLE_DEVICE="/dev/ttyS1"
 BLE_TIMEOUT="5"
-BLE_BUFFER_SIZE="1024"
+BLE_LOCK="/tmp/ble.lock"
 
-# Function to send BLE command
+ble_lock() {
+    exec 200>"$BLE_LOCK"
+    flock -x 200
+}
+
+ble_unlock() {
+    flock -u 200
+}
+
 ble_send() {
     local command="$1"
     local data="$2"
-    
-    # Send command to BLE device
-    echo -ne "$command$data\r\n" > "$BLE_DEVICE"
-    
-    # Wait for response
-    sleep 0.1
-    
-    # Read response
-    local response=$(timeout "$BLE_TIMEOUT" cat "$BLE_DEVICE" 2>/dev/null)
-    echo "$response"
+
+    ble_lock
+
+    echo -n -e "${command}${data}" > "$BLE_DEVICE"
+
+    sleep 1
+
+    timeout "$BLE_TIMEOUT" cat "$BLE_DEVICE" 2>/dev/null
+
+    ble_unlock
 }
 
-# Function to configure BLE module
+ble_monitor() {
+    while true; do
+        timeout 1 cat "$BLE_DEVICE" 2>/dev/null
+    done
+}
+
+# --- new low-level helpers ---
+
+ble_reset() {
+    ble_send "AT+RESET" ""
+}
+
+ble_set_role() {
+    ble_send "AT+ROLE=" "$1"
+}
+
+ble_observer() {
+    ble_set_role "2"
+    sleep 1
+    ble_reset
+}
+
+ble_capture() {
+    local outfile="${1:-/tmp/bt.bin}"
+    local duration="${2:-15}"
+
+    ble_observer
+
+    timeout "$duration" cat "$BLE_DEVICE" > "$outfile" 2>/dev/null
+}
+
+ble_scan_strings() {
+    strings "${1:-/tmp/bt.bin}" | sort | uniq -c | sort -nr
+}
+
+ble_wait_present() {
+    local needle="$1"
+
+    ble_observer
+
+    while true; do
+        timeout 5 cat "$BLE_DEVICE" > /tmp/bt_observation 2>/dev/null
+
+        if grep -qao "$needle" /tmp/bt_observation; then
+            return 0
+        fi
+
+        sleep 1
+    done
+}
+
+ble_wait_not_present() {
+    local needle="$1"
+
+    ble_observer
+
+    while true; do
+        timeout 5 cat "$BLE_DEVICE" > /tmp/bt_observation 2>/dev/null
+
+        if ! grep -qao "$needle" /tmp/bt_observation; then
+            return 0
+        fi
+
+        sleep 1
+    done
+}
+
 ble_configure() {
     local role="$1"
-    local config="$2"
-    
+
     case "$role" in
-        "slave")
-            ble_send "AT+ROLE=0" ""
+        slave)
+            ble_set_role 0
             ;;
-        "master")
-            ble_send "AT+ROLE=1" ""
+        master)
+            ble_set_role 1
             ;;
-        "observer")
-            ble_send "AT+ROLE=2" ""
+        observer)
+            ble_observer
             ;;
         *)
-            echo "Invalid role. Use: slave, master, or observer"
+            echo "Invalid role. Use: slave, master, observer"
             return 1
             ;;
     esac
-    
-    # Apply configuration
-    ble_send "$config" ""
 }
 
-# Function to set BLE transmit power
 ble_set_power() {
-    local power="$1"
-    ble_send "AT+PWR=$power" ""
+    ble_send "AT+PWR=" "$1"
 }
 
-# Function to set BLE MTU
 ble_set_mtu() {
-    local mtu="$1"
-    ble_send "AT+MTU=$mtu" ""
+    ble_send "AT+MTU=" "$1"
 }
 
-# Function to set BLE UUID
 ble_set_uuid() {
-    local uuid="$1"
-    ble_send "AT+UUIDSVR=$uuid" ""
+    ble_send "AT+UUIDSVR=" "$1"
 }
 
-# Function to set BLE name
 ble_set_name() {
-    local name="$1"
-    ble_send "AT+NAME=$name" ""
+    ble_send "AT+NAME=" "$1"
 }
 
-# Function to set BLE scan parameters
 ble_set_scan() {
     local scan_enable="$1"
     local scan_interval="$2"
     local scan_window="$3"
-    
-    ble_send "AT+SCAN=$scan_enable" ""
-    ble_send "AT+SCANINTV=$scan_interval" ""
-    ble_send "AT+SCANWND=$scan_window" ""
+
+    [ -n "$scan_enable" ] && ble_send "AT+SCAN=" "$scan_enable"
+    [ -n "$scan_interval" ] && ble_send "AT+SCANINTV=" "$scan_interval"
+    [ -n "$scan_window" ] && ble_send "AT+SCANWND=" "$scan_window"
 }
 
-# Function to set BLE connection parameters
 ble_set_connection() {
     local conn_interval="$1"
     local conn_latency="$2"
     local supervision_timeout="$3"
-    
-    ble_send "AT+CONINTV=$conn_interval" ""
-    ble_send "AT+CONNLAT=$conn_latency" ""
-    ble_send "AT+CONNTIMEOUT=$supervision_timeout" ""
+
+    [ -n "$conn_interval" ] && ble_send "AT+CONINTV=" "$conn_interval"
+    [ -n "$conn_latency" ] && ble_send "AT+CONNLAT=" "$conn_latency"
+    [ -n "$supervision_timeout" ] && ble_send "AT+CONNTIMEOUT=" "$supervision_timeout"
 }
 
-# Function to set BLE advertising parameters
 ble_set_advertising() {
-    local adv_interval_min="$1"
-    local adv_interval_max="$2"
-    local adv_type="$3"
-    
-    ble_send "AT+ADVINTV=$adv_interval_min" ""
-    ble_send "AT+ADVINTV=$adv_interval_max" ""
-    ble_send "AT+ADVTYPE=$adv_type" ""
+    local adv_interval="$1"
+    local adv_type="$2"
+
+    [ -n "$adv_interval" ] && ble_send "AT+ADVINTV=" "$adv_interval"
+    [ -n "$adv_type" ] && ble_send "AT+ADVTYPE=" "$adv_type"
 }
 
-# Function to set BLE data transmission mode
 ble_set_transmission_mode() {
-    local mode="$1"  # 0 = non-transparent, 1 = transparent
-    ble_send "AT+TRANMD=$mode" ""
+    ble_send "AT+TRANMD=" "$1"
 }
 
-# Function to set BLE authentication
 ble_set_auth() {
-    local password="$1"
-    ble_send "AT+AUTH=$password" ""
+    ble_send "AT+AUTH=" "$1"
 }
 
-# Function to set BLE sleep mode
 ble_set_sleep() {
-    local sleep_mode="$1"  # 0 = off, 1 = on
-    ble_send "AT+ONSLEEP=$sleep_mode" ""
+    ble_send "AT+ONSLEEP=" "$1"
 }
 
-# Function to enter sleep mode
 ble_enter_sleep() {
     ble_send "AT+SLEEP" ""
 }
 
-# Function to get BLE version
 ble_get_version() {
-    ble_send "AT+VER" ""
+    ble_send "AT+VER?" ""
 }
 
-# Function to get BLE MAC address
 ble_get_mac() {
-    ble_send "AT+MAC" ""
+    ble_send "AT+MAC?" ""
 }
 
-# Function to get BLE connection info
 ble_get_connection_info() {
     ble_send "AT+CONINFO=0" ""
 }
 
-# Function to disconnect BLE connection
 ble_disconnect() {
     ble_send "AT+DISCON=0" ""
 }
 
-# Function to set BLE bonding
 ble_set_bonding() {
-    local mac_address="$1"
-    ble_send "AT+BONDMAC=$mac_address" ""
+    ble_send "AT+BONDMAC=" "$1"
 }
 
-# Function to delete BLE bond
 ble_delete_bond() {
-    local mac_address="$1"
-    ble_send "AT+BONDDEL=$mac_address" ""
+    ble_send "AT+BONDDEL=" "$1"
 }
 
-# Function to set BLE log message
 ble_set_log() {
-    local log_enable="$1"  # 0 = off, 1 = on
-    ble_send "AT+LOGMSG=$log_enable" ""
+    ble_send "AT+LOGMSG=" "$1"
 }
 
-# Function to set BLE scan response
 ble_set_scan_response() {
-    local scan_response="$1"
-    ble_send "AT+SCANRSP=$scan_response" ""
+    ble_send "AT+SCANRSP=" "$1"
 }
 
-# Function to set BLE advertising data
 ble_set_advertising_data() {
-    local adv_data="$1"
-    ble_send "AT+ADVDATA=$adv_data" ""
+    ble_send "AT+ADVDATA=" "$1"
 }
 
-# Function to set BLE service UUID
 ble_set_service_uuid() {
-    local service_uuid="$1"
-    ble_send "AT+UUIDSVR128=$service_uuid" ""
+    ble_send "AT+UUIDSVR128=" "$1"
 }
 
-# Function to set BLE characteristic UUID
 ble_set_characteristic_uuid() {
-    local char_uuid="$1"
-    ble_send "AT+UUIDSLAVE=$char_uuid" ""
+    ble_send "AT+UUIDSLAVE=" "$1"
 }
 
-# Function to set BLE notification
 ble_set_notification() {
-    local notification="$1"  # 0 = off, 1 = on
-    ble_send "AT+NOTIFY=$notification" ""
+    ble_send "AT+NOTIFY=" "$1"
 }
 
-# Function to send data via BLE
 ble_send_data() {
-    local data="$1"
-    echo -ne "$data" > "$BLE_DEVICE"
+    ble_lock
+    echo -n -e "$1" > "$BLE_DEVICE"
+    ble_unlock
 }
 
-# Function to receive data via BLE
 ble_receive_data() {
-    local timeout="$1"
-    timeout "$timeout" cat "$BLE_DEVICE" 2>/dev/null
+    timeout "${1:-5}" cat "$BLE_DEVICE" 2>/dev/null
 }
 
-# Main function to process BLE commands
 ble_ctl() {
     local command="$1"
-    local data="$2"
-    
+    shift
+
     case "$command" in
-        "CONFIGURE")
-            ble_configure "$data"
+        CONFIGURE)
+            ble_configure "$@"
             ;;
-        "POWER")
-            ble_set_power "$data"
+        POWER)
+            ble_set_power "$1"
             ;;
-        "MTU")
-            ble_set_mtu "$data"
+        MTU)
+            ble_set_mtu "$1"
             ;;
-        "UUID")
-            ble_set_uuid "$data"
+        UUID)
+            ble_set_uuid "$1"
             ;;
-        "NAME")
-            ble_set_name "$data"
+        NAME)
+            ble_set_name "$*"
             ;;
-        "SCAN")
-            ble_set_scan "$data"
+        SCAN)
+            ble_set_scan "$@"
             ;;
-        "CONNECTION")
-            ble_set_connection "$data"
+        CONNECTION)
+            ble_set_connection "$@"
             ;;
-        "ADVERTISING")
-            ble_set_advertising "$data"
+        ADVERTISING)
+            ble_set_advertising "$@"
             ;;
-        "TRANSMISSION")
-            ble_set_transmission_mode "$data"
+        TRANSMISSION)
+            ble_set_transmission_mode "$1"
             ;;
-        "AUTH")
-            ble_set_auth "$data"
+        AUTH)
+            ble_set_auth "$1"
             ;;
-        "SLEEP")
-            ble_set_sleep "$data"
+        SLEEP)
+            ble_set_sleep "$1"
             ;;
-        "ENTER_SLEEP")
+        ENTER_SLEEP)
             ble_enter_sleep
             ;;
-        "VERSION")
+        VERSION)
             ble_get_version
             ;;
-        "MAC")
+        MAC)
             ble_get_mac
             ;;
-        "CONNECTION_INFO")
+        CONNECTION_INFO)
             ble_get_connection_info
             ;;
-        "DISCONNECT")
+        DISCONNECT)
             ble_disconnect
             ;;
-        "BOND")
-            ble_set_bonding "$data"
+        BOND)
+            ble_set_bonding "$1"
             ;;
-        "DELETE_BOND")
-            ble_delete_bond "$data"
+        DELETE_BOND)
+            ble_delete_bond "$1"
             ;;
-        "LOG")
-            ble_set_log "$data"
+        LOG)
+            ble_set_log "$1"
             ;;
-        "SCAN_RESPONSE")
-            ble_set_scan_response "$data"
+        SCAN_RESPONSE)
+            ble_set_scan_response "$1"
             ;;
-        "ADVERTISING_DATA")
-            ble_set_advertising_data "$data"
+        ADVERTISING_DATA)
+            ble_set_advertising_data "$1"
             ;;
-        "SERVICE_UUID")
-            ble_set_service_uuid "$data"
+        SERVICE_UUID)
+            ble_set_service_uuid "$1"
             ;;
-        "CHARACTERISTIC_UUID")
-            ble_set_characteristic_uuid "$data"
+        CHARACTERISTIC_UUID)
+            ble_set_characteristic_uuid "$1"
             ;;
-        "NOTIFICATION")
-            ble_set_notification "$data"
+        NOTIFICATION)
+            ble_set_notification "$1"
             ;;
-        "SEND")
-            ble_send_data "$data"
+        SEND)
+            ble_send_data "$*"
             ;;
-        "RECEIVE")
-            ble_receive_data "$data"
+        RECEIVE)
+            ble_receive_data "$1"
+            ;;
+        MONITOR)
+            ble_monitor
+            ;;
+        OBSERVER)
+            ble_observer
+            ;;
+        CAPTURE)
+            ble_capture "$@"
+            ;;
+        SCAN_STRINGS)
+            ble_scan_strings "$1"
+            ;;
+        WAIT_PRESENT)
+            ble_wait_present "$1"
+            ;;
+        WAIT_NOT_PRESENT)
+            ble_wait_not_present "$1"
+            ;;
+        RESET)
+            ble_reset
+            ;;
+        ROLE)
+            ble_set_role "$1"
             ;;
         *)
             echo "Unknown command: $command"
+            echo
+            echo "Examples:"
+            echo "  BLE_CTL VERSION"
+            echo "  BLE_CTL ROLE 2"
+            echo "  BLE_CTL OBSERVER"
+            echo "  BLE_CTL CAPTURE /tmp/bt.bin 30"
+            echo "  BLE_CTL SCAN_STRINGS /tmp/bt.bin"
+            echo "  BLE_CTL WAIT_PRESENT BB2"
+            echo "  BLE_CTL WAIT_NOT_PRESENT BB2"
+            echo "  BLE_CTL MONITOR"
             return 1
             ;;
     esac
 }
 
-# Extension entry point
-case "$1" in
-    "BLE_CTL")
-        ble_ctl "$2" "$3"
-        ;;
-    *)
-        echo "Usage: BLE_CTL {Command} {Data}"
-        exit 1
-        ;;
-esac
+ble_ctl "$@"
