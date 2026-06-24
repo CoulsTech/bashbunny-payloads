@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Initialize
+LED SETUP 
+# Configuration
+SOURCE="/dev/nandf"
+SDHC="/dev/mmcblk0p1"
+SDHC_MOUNT="/root/udisk"
+DEST="${SDHC_MOUNT}/backups"
+PREFIX="nandf-backup"
+COMPRESS_LEVEL="1"
+OUTPUT_PREFIX="${DEST}/${PREFIX}-"
+OUTPUT_SUFFIX="1"
+
+# Backup
+
+LED G
+
+mount -o sync "${SDHC}" "${SDHC_MOUNT}" || {
+    LED FAIL
+    exit 1
+}
+
+LED ATTACK
+
+if [ ! -d "$DEST" ]; then
+    mkdir -p "$DEST"
+fi
+
+while [ -e "${OUTPUT_PREFIX}${OUTPUT_SUFFIX}.gz" ]; do
+    OUTPUT_SUFFIX=$((OUTPUT_SUFFIX + 1))
+done
+
+LED SPECIAL
+
+if dd if="$SOURCE" bs=4M | gzip -c -"${COMPRESS_LEVEL}" > "${OUTPUT_PREFIX}${OUTPUT_SUFFIX}.gz"; then
+    sync
+    umount "$SDHC_MOUNT"
+    LED FINISH
+else
+    sync
+    umount "$SDHC_MOUNT" 2>/dev/null
+    LED FAIL
+    exit 1
+fi
