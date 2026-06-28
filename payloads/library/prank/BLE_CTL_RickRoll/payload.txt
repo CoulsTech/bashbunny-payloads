@@ -1,112 +1,27 @@
-#Title: RickRollBeacon
-#Author: CoulsTech
-#Description: RickRoll Beacon Using BLE_CTL
-#Target: BLE
-# Set BLE module to advertising mode (master)
-BLE_CTL CONFIGURE master
+#!/bin/bash
+#
+# Title: BLE_CTL UART GATT Demo
+# Author: CoulsTech
+# Description: Demonstrates the E104-BT52 built-in UART BLE service through BLE_CTL.
+# Target: Bash Bunny Mark II
+# Attackmodes: SERIAL
 
-# Set BLE name to something catchy
-BLE_CTL NAME "RickRollBeacon"
+LED SETUP
+ATTACKMODE SERIAL
 
-# Set transmit power to maximum
-BLE_CTL POWER 7
+# The E104-BT52 does not expose a general-purpose BlueZ/GATT server.
+# This configures its built-in UART service and two characteristics.
+BLE_CTL GATT SERVER FFF0 FFF1 FFF2
+sleep 2
 
-# Set MTU size
-BLE_CTL MTU 23
+BLE_CTL NAME "BB-BLE-UART"
+BLE_CTL ADVERTISE on
+BLE_CTL ADVERTISING_DATA "BB-BLE-UART"
 
-# Set advertising parameters for spamming
-BLE_CTL ADVINTV 100
-BLE_CTL ADVINTV 150
-BLE_CTL ADVTYPE 0
+LED B SLOW
 
-# Set service UUID (for discovery)
-BLE_CTL SERVICE_UUID "0000180F-0000-1000-8000-00805F9B34FB"
+# Pair/connect from nRF Connect or a serial BLE client, then write to the
+# module's write characteristic. Incoming BLE payloads appear on /dev/ttyS1.
+BLE_CTL RECEIVE 60 > /tmp/ble_ctl_demo_rx.txt
 
-# Set characteristic UUID
-BLE_CTL CHARACTERISTIC_UUID "00002A19-0000-1000-8000-00805F9B34FB"
-
-# Enable notifications
-BLE_CTL NOTIFICATION 1
-
-# Set log messages
-BLE_CTL LOG 1
-
-# --- Lyrics / data section ---
-# Store lyrics in an array
-lyrics=(
-"We're no strangers to love"
-"You know the rules and so do I"
-"A full commitment's what I'm thinking of"
-"You wouldn't get this from any other guy"
-"I just wanna tell you how I'm feeling"
-"Gotta make you understand"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"We've known each other for so long"
-"Your heart's been aching, but you're too shy to say it"
-"Inside, we both know what's been going on"
-"We know the game, and we're gonna play it"
-"And if you ask me how I'm feeling"
-"Don't tell me you're too blind to see"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"Ooh (Give you up)"
-"Ooh-ooh (Give you up)"
-"Ooh (Never gonna give, never gonna give)"
-"Give you up"
-"Ooh-ooh (Never gonna give, never gonna give)"
-"Give you up"
-"We've known each other for so long"
-"Your heart's been aching, but you're too shy to say it"
-"Inside, we both know what's been going on"
-"We know the game, and we're gonna play it"
-"I just wanna tell you how I'm feeling"
-"Gotta make you understand"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-"Never gonna give you up"
-"Never gonna let you down"
-"Never gonna run around and desert you"
-"Never gonna make you cry"
-"Never gonna say goodbye"
-"Never gonna tell a lie and hurt you"
-)
-
-# Spam beacon advertisements in a loop
-for i in "${!lyrics[@]}"; do
-    # Send the current lyric line as advertising data
-    BLE_CTL ADVERTISING_DATA "${lyrics[i]}"
-    
-    # Optional: Add a small delay between advertisements
-    # SLEEP 10
-done
+LED FINISH

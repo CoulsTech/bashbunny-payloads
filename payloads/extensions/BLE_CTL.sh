@@ -1,366 +1,438 @@
 #!/bin/bash
-
+#
 # Title: BLE_CTL Extension
-# Description: Bluetooth Low Energy control for EBYTE E104-BT52 modules
+# Description: BLE control for EBYTE E104-BT52 UART modules
 # Author: CoulsTech
-# Version: 1.2
+# Version: 0.4
 # Category: Extension
+# Usage: BLE_CTL <command> [args...]
 
-BLE_DEVICE="/dev/ttyS1"
-BLE_TIMEOUT="5"
-BLE_LOCK="/tmp/ble.lock"
+: "${BLE_CTL_DEVICE:=/dev/ttyS1}"
+: "${BLE_CTL_BAUD:=115200}"
+: "${BLE_CTL_TIMEOUT:=2}"
+: "${BLE_CTL_LOCK:=/tmp/ble_ctl.lock}"
+: "${BLE_CTL_SCAN_CACHE:=/tmp/ble_ctl_scan.bin}"
+: "${BLE_CTL_ESCAPE_BEFORE_AT:=1}"
 
-ble_lock() {
-    exec 200>"$BLE_LOCK"
+ble_ctl_init() {
+    [ -e "$BLE_CTL_DEVICE" ] || {
+        echo "BLE_CTL: device not found: $BLE_CTL_DEVICE" >&2
+        return 1
+    }
+
+    stty -F "$BLE_CTL_DEVICE" "$BLE_CTL_BAUD" cs8 -cstopb -parenb -echo -ixon -icanon -opost 2>/dev/null
+}
+
+ble_ctl_lock() {
+    exec 200>"$BLE_CTL_LOCK"
     flock -x 200
 }
 
-ble_unlock() {
+ble_ctl_unlock() {
     flock -u 200
 }
 
-ble_send() {
+ble_ctl_read_response() {
+    local timeout_sec="${1:-$BLE_CTL_TIMEOUT}"
+
+    timeout "$timeout_sec" cat "$BLE_CTL_DEVICE" 2>/dev/null
+}
+
+ble_ctl_at() {
     local command="$1"
-    local data="$2"
+    local timeout_sec="${2:-$BLE_CTL_TIMEOUT}"
+    local response
 
-    ble_lock
+    [ -n "$command" ] || {
+        echo "BLE_CTL: missing AT command" >&2
+        return 1
+    }
 
-    echo -n -e "${command}${data}" > "$BLE_DEVICE"
+    ble_ctl_lock
+    ble_ctl_init || {
+        ble_ctl_unlock
+        return 1
+    }
 
-    sleep 1
-
-    timeout "$BLE_TIMEOUT" cat "$BLE_DEVICE" 2>/dev/null
-
-    ble_unlock
-}
-
-ble_monitor() {
-    while true; do
-        timeout 1 cat "$BLE_DEVICE" 2>/dev/null
-    done
-}
-
-# --- new low-level helpers ---
-
-ble_reset() {
-    ble_send "AT+RESET" ""
-}
-
-ble_set_role() {
-    ble_send "AT+ROLE=" "$1"
-}
-
-ble_observer() {
-    ble_set_role "2"
-    sleep 1
-    ble_reset
-}
-
-ble_capture() {
-    local outfile="${1:-/tmp/bt.bin}"
-    local duration="${2:-15}"
-
-    ble_observer
-
-    timeout "$duration" cat "$BLE_DEVICE" > "$outfile" 2>/dev/null
-}
-
-ble_scan_strings() {
-    strings "${1:-/tmp/bt.bin}" | sort | uniq -c | sort -nr
-}
-
-ble_wait_present() {
-    local needle="$1"
-
-    ble_observer
-
-    while true; do
-        timeout 5 cat "$BLE_DEVICE" > /tmp/bt_observation 2>/dev/null
-
-        if grep -qao "$needle" /tmp/bt_observation; then
-            return 0
-        fi
-
+    if [ "$BLE_CTL_ESCAPE_BEFORE_AT" = "1" ]; then
+        printf '+++' > "$BLE_CTL_DEVICE"
         sleep 1
-    done
+        ble_ctl_read_response 1 >/dev/null
+    fi
+
+    printf '%s' "$command" > "$BLE_CTL_DEVICE"
+    response="$(ble_ctl_read_response "$timeout_sec")"
+    ble_ctl_unlock
+
+    printf '%s' "$response"
+    printf '%s' "$response" | grep -q '+ERR=' && return 1
+    return 0
 }
 
-ble_wait_not_present() {
-    local needle="$1"
+ble_ctl_at_hex16_le() {
+    local command="$1"
+    local value="$2"
+    local timeout_sec="${3:-$BLE_CTL_TIMEOUT}"
+    local high
+    local low
+    local response
 
-    ble_observer
-
-    while true; do
-        timeout 5 cat "$BLE_DEVICE" > /tmp/bt_observation 2>/dev/null
-
-        if ! grep -qao "$needle" /tmp/bt_observation; then
-            return 0
-        fi
-
-        sleep 1
-    done
-}
-
-ble_configure() {
-    local role="$1"
-
-    case "$role" in
-        slave)
-            ble_set_role 0
-            ;;
-        master)
-            ble_set_role 1
-            ;;
-        observer)
-            ble_observer
+    case "$value" in
+        [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+            high="${value%??}"
+            low="${value#??}"
             ;;
         *)
-            echo "Invalid role. Use: slave, master, observer"
+            echo "BLE_CTL: $command requires a 16-bit hex UUID, for example FFF0" >&2
+            return 1
+            ;;
+    esac
+
+    ble_ctl_lock
+    ble_ctl_init || {
+        ble_ctl_unlock
+        return 1
+    }
+
+    if [ "$BLE_CTL_ESCAPE_BEFORE_AT" = "1" ]; then
+        printf '+++' > "$BLE_CTL_DEVICE"
+        sleep 1
+        ble_ctl_read_response 1 >/dev/null
+    fi
+
+    printf '%s=' "$command" > "$BLE_CTL_DEVICE"
+    printf '%b%b' "\\x$low" "\\x$high" > "$BLE_CTL_DEVICE"
+    response="$(ble_ctl_read_response "$timeout_sec")"
+    ble_ctl_unlock
+
+    printf '%s' "$response"
+    printf '%s' "$response" | grep -q '+ERR' && return 1
+    return 0
+}
+
+ble_ctl_data() {
+    ble_ctl_lock
+    ble_ctl_init || {
+        ble_ctl_unlock
+        return 1
+    }
+
+    printf '%s' "$*" > "$BLE_CTL_DEVICE"
+    ble_ctl_unlock
+}
+
+ble_ctl_config_mode() {
+    ble_ctl_lock
+    ble_ctl_init || {
+        ble_ctl_unlock
+        return 1
+    }
+
+    printf '+++' > "$BLE_CTL_DEVICE"
+    ble_ctl_read_response "$BLE_CTL_TIMEOUT"
+    ble_ctl_unlock
+}
+
+ble_ctl_role() {
+    case "$1" in
+        slave|SLAVE|peripheral|PERIPHERAL|0) ble_ctl_at "AT+ROLE=0" ;;
+        master|MASTER|central|CENTRAL|1) ble_ctl_at "AT+ROLE=1" ;;
+        observer|OBSERVER|scan|SCAN|2) ble_ctl_at "AT+ROLE=2" ;;
+        mixed|MIXED|both|BOTH|3) ble_ctl_at "AT+ROLE=3" ;;
+        *)
+            echo "Usage: BLE_CTL ROLE slave|master|observer|mixed" >&2
             return 1
             ;;
     esac
 }
 
-ble_set_power() {
-    ble_send "AT+PWR=" "$1"
+ble_ctl_configure() {
+    ble_ctl_role "$1"
 }
 
-ble_set_mtu() {
-    ble_send "AT+MTU=" "$1"
+ble_ctl_advertise() {
+    local state="${1:-on}"
+
+    case "$state" in
+        on|ON|enable|ENABLE|1) ble_ctl_at "AT+ADV=1" ;;
+        off|OFF|disable|DISABLE|0) ble_ctl_at "AT+ADV=0" ;;
+        ibeacon|IBEACON|2) ble_ctl_at "AT+ADV=2" ;;
+        *)
+            echo "Usage: BLE_CTL ADVERTISE on|off|ibeacon" >&2
+            return 1
+            ;;
+    esac
 }
 
-ble_set_uuid() {
-    ble_send "AT+UUIDSVR=" "$1"
+ble_ctl_adv_data() {
+    local data="$*"
+
+    [ -n "$data" ] || {
+        echo "Usage: BLE_CTL ADVERTISING_DATA <1-25 byte value>" >&2
+        return 1
+    }
+
+    if [ "${#data}" -gt 25 ]; then
+        echo "BLE_CTL: advertising data must be 25 bytes or less" >&2
+        return 1
+    fi
+
+    ble_ctl_at "AT+ADVDAT=$data"
 }
 
-ble_set_name() {
-    ble_send "AT+NAME=" "$1"
+ble_ctl_scan() {
+    local duration="${1:-10}"
+
+    ble_ctl_role observer >/dev/null || return 1
+    ble_ctl_at "AT+RESET" >/dev/null
+    sleep 1
+
+    ble_ctl_lock
+    ble_ctl_init || {
+        ble_ctl_unlock
+        return 1
+    }
+    timeout "$duration" cat "$BLE_CTL_DEVICE" > "$BLE_CTL_SCAN_CACHE" 2>/dev/null
+    ble_ctl_unlock
+
+    strings "$BLE_CTL_SCAN_CACHE" | sort | uniq -c | sort -nr
 }
 
-ble_set_scan() {
-    local scan_enable="$1"
-    local scan_interval="$2"
-    local scan_window="$3"
-
-    [ -n "$scan_enable" ] && ble_send "AT+SCAN=" "$scan_enable"
-    [ -n "$scan_interval" ] && ble_send "AT+SCANINTV=" "$scan_interval"
-    [ -n "$scan_window" ] && ble_send "AT+SCANWND=" "$scan_window"
+ble_ctl_monitor() {
+    ble_ctl_init || return 1
+    cat "$BLE_CTL_DEVICE"
 }
 
-ble_set_connection() {
-    local conn_interval="$1"
-    local conn_latency="$2"
-    local supervision_timeout="$3"
+ble_ctl_rx() {
+    local duration="${1:-5}"
 
-    [ -n "$conn_interval" ] && ble_send "AT+CONINTV=" "$conn_interval"
-    [ -n "$conn_latency" ] && ble_send "AT+CONNLAT=" "$conn_latency"
-    [ -n "$supervision_timeout" ] && ble_send "AT+CONNTIMEOUT=" "$supervision_timeout"
+    ble_ctl_init || return 1
+    timeout "$duration" cat "$BLE_CTL_DEVICE"
 }
 
-ble_set_advertising() {
-    local adv_interval="$1"
-    local adv_type="$2"
+ble_ctl_hex() {
+    local duration="${1:-5}"
 
-    [ -n "$adv_interval" ] && ble_send "AT+ADVINTV=" "$adv_interval"
-    [ -n "$adv_type" ] && ble_send "AT+ADVTYPE=" "$adv_type"
+    ble_ctl_init || return 1
+    timeout "$duration" cat "$BLE_CTL_DEVICE" | hexdump -C
 }
 
-ble_set_transmission_mode() {
-    ble_send "AT+TRANMD=" "$1"
+ble_ctl_wait() {
+    local mode="$1"
+    local needle="$2"
+
+    [ -n "$needle" ] || {
+        echo "Usage: BLE_CTL WAIT present|absent <text>" >&2
+        return 1
+    }
+
+    ble_ctl_role observer >/dev/null || return 1
+    ble_ctl_at "AT+RESET" >/dev/null
+    sleep 1
+
+    while true; do
+        ble_ctl_lock
+        ble_ctl_init || {
+            ble_ctl_unlock
+            return 1
+        }
+        timeout 5 cat "$BLE_CTL_DEVICE" > /tmp/ble_ctl_observation 2>/dev/null
+        ble_ctl_unlock
+
+        case "$mode" in
+            present)
+                grep -qao "$needle" /tmp/ble_ctl_observation && return 0
+                ;;
+            absent)
+                grep -qao "$needle" /tmp/ble_ctl_observation || return 0
+                ;;
+            *)
+                echo "Usage: BLE_CTL WAIT present|absent <text>" >&2
+                return 1
+                ;;
+        esac
+        sleep 1
+    done
 }
 
-ble_set_auth() {
-    ble_send "AT+AUTH=" "$1"
+ble_ctl_gatt_server() {
+    local service_uuid="${1:-FFF0}"
+    local read_uuid="${2:-FFF1}"
+    local write_uuid="${3:-FFF2}"
+
+    ble_ctl_at "AT+ROLE=0" >/dev/null || return 1
+    ble_ctl_at_hex16_le "AT+UUIDSVR" "$service_uuid" || return 1
+    ble_ctl_at_hex16_le "AT+UUIDSLAVE" "$read_uuid" || return 1
+    ble_ctl_at_hex16_le "AT+UUIDMAST" "$write_uuid" || return 1
+    ble_ctl_at "AT+TRANMD=1" || return 1
+    ble_ctl_at "AT+ADV=1" || return 1
+    ble_ctl_at "AT+RESET"
 }
 
-ble_set_sleep() {
-    ble_send "AT+ONSLEEP=" "$1"
+ble_ctl_gatt() {
+    local subcommand="$1"
+    shift || true
+
+    case "$subcommand" in
+        SERVER|server|"")
+            ble_ctl_gatt_server "$@"
+            ;;
+        *)
+            echo "BLE_CTL: E104-BT52 only supports configuring its built-in UART GATT service" >&2
+            echo "Usage: BLE_CTL GATT SERVER [service_uuid] [read_uuid] [write_uuid]" >&2
+            return 1
+            ;;
+    esac
 }
 
-ble_enter_sleep() {
-    ble_send "AT+SLEEP" ""
-}
-
-ble_get_version() {
-    ble_send "AT+VER?" ""
-}
-
-ble_get_mac() {
-    ble_send "AT+MAC?" ""
-}
-
-ble_get_connection_info() {
-    ble_send "AT+CONINFO=0" ""
-}
-
-ble_disconnect() {
-    ble_send "AT+DISCON=0" ""
-}
-
-ble_set_bonding() {
-    ble_send "AT+BONDMAC=" "$1"
-}
-
-ble_delete_bond() {
-    ble_send "AT+BONDDEL=" "$1"
-}
-
-ble_set_log() {
-    ble_send "AT+LOGMSG=" "$1"
-}
-
-ble_set_scan_response() {
-    ble_send "AT+SCANRSP=" "$1"
-}
-
-ble_set_advertising_data() {
-    ble_send "AT+ADVDATA=" "$1"
-}
-
-ble_set_service_uuid() {
-    ble_send "AT+UUIDSVR128=" "$1"
-}
-
-ble_set_characteristic_uuid() {
-    ble_send "AT+UUIDSLAVE=" "$1"
-}
-
-ble_set_notification() {
-    ble_send "AT+NOTIFY=" "$1"
-}
-
-ble_send_data() {
-    ble_lock
-    echo -n -e "$1" > "$BLE_DEVICE"
-    ble_unlock
-}
-
-ble_receive_data() {
-    timeout "${1:-5}" cat "$BLE_DEVICE" 2>/dev/null
-}
-
-ble_ctl() {
+BLE_CTL() {
     local command="$1"
-    shift
+    shift || true
 
     case "$command" in
-        CONFIGURE)
-            ble_configure "$@"
+        AT|RAW)
+            ble_ctl_at "$*"
             ;;
-        POWER)
-            ble_set_power "$1"
+        INIT)
+            ble_ctl_init
             ;;
-        MTU)
-            ble_set_mtu "$1"
+        CONFIG)
+            ble_ctl_config_mode
             ;;
-        UUID)
-            ble_set_uuid "$1"
+        CONFIGURE|ROLE)
+            ble_ctl_role "$1"
             ;;
         NAME)
-            ble_set_name "$*"
+            ble_ctl_at "AT+NAME=$*"
             ;;
-        SCAN)
-            ble_set_scan "$@"
+        ADVERTISE|ADV)
+            ble_ctl_advertise "$1"
             ;;
-        CONNECTION)
-            ble_set_connection "$@"
+        ADVERTISING_DATA|ADVDAT)
+            ble_ctl_adv_data "$*"
             ;;
-        ADVERTISING)
-            ble_set_advertising "$@"
+        ADVINTV)
+            ble_ctl_at "AT+ADVINTV=$1"
             ;;
-        TRANSMISSION)
-            ble_set_transmission_mode "$1"
+        POWER|PWR)
+            ble_ctl_at "AT+PWR=$1"
+            ;;
+        MTU)
+            ble_ctl_at "AT+MTU=$1"
+            ;;
+        TRANSMISSION|TRANMD)
+            ble_ctl_at "AT+TRANMD=$1"
+            ;;
+        SERVICE_UUID|UUID)
+            ble_ctl_at_hex16_le "AT+UUIDSVR" "$1"
+            ;;
+        SERVICE_UUID128|UUID128)
+            ble_ctl_at "AT+UUIDSVR128=$1"
+            ;;
+        READ_UUID|CHARACTERISTIC_UUID|CHAR1)
+            ble_ctl_at_hex16_le "AT+UUIDSLAVE" "$1"
+            ;;
+        WRITE_UUID|CHAR2)
+            ble_ctl_at_hex16_le "AT+UUIDMAST" "$1"
             ;;
         AUTH)
-            ble_set_auth "$1"
+            ble_ctl_at "AT+AUTH=$1"
             ;;
-        SLEEP)
-            ble_set_sleep "$1"
-            ;;
-        ENTER_SLEEP)
-            ble_enter_sleep
-            ;;
-        VERSION)
-            ble_get_version
-            ;;
-        MAC)
-            ble_get_mac
-            ;;
-        CONNECTION_INFO)
-            ble_get_connection_info
-            ;;
-        DISCONNECT)
-            ble_disconnect
-            ;;
-        BOND)
-            ble_set_bonding "$1"
-            ;;
-        DELETE_BOND)
-            ble_delete_bond "$1"
+        UPAUTH)
+            ble_ctl_at "AT+UPAUTH=$1"
             ;;
         LOG)
-            ble_set_log "$1"
+            ble_ctl_at "AT+LOGMSG=$1"
             ;;
-        SCAN_RESPONSE)
-            ble_set_scan_response "$1"
+        SCAN_ENABLE)
+            ble_ctl_at "AT+SCAN=$1"
             ;;
-        ADVERTISING_DATA)
-            ble_set_advertising_data "$1"
+        SCANINTV)
+            ble_ctl_at "AT+SCANINTV=$1"
             ;;
-        SERVICE_UUID)
-            ble_set_service_uuid "$1"
+        SCANWND)
+            ble_ctl_at "AT+SCANWND=$1"
             ;;
-        CHARACTERISTIC_UUID)
-            ble_set_characteristic_uuid "$1"
+        BOND)
+            ble_ctl_at "AT+BONDMAC=$1"
             ;;
-        NOTIFICATION)
-            ble_set_notification "$1"
+        DISCONNECT|DISCON)
+            ble_ctl_at "AT+DISCON${1:+=$1}"
             ;;
-        SEND)
-            ble_send_data "$*"
+        MAC)
+            ble_ctl_at "AT+MAC?"
             ;;
-        RECEIVE)
-            ble_receive_data "$1"
+        VERSION|VER)
+            ble_ctl_at "AT+VER?"
             ;;
-        MONITOR)
-            ble_monitor
-            ;;
-        OBSERVER)
-            ble_observer
-            ;;
-        CAPTURE)
-            ble_capture "$@"
-            ;;
-        SCAN_STRINGS)
-            ble_scan_strings "$1"
-            ;;
-        WAIT_PRESENT)
-            ble_wait_present "$1"
-            ;;
-        WAIT_NOT_PRESENT)
-            ble_wait_not_present "$1"
+        CONNECTION_INFO|CONINFO)
+            ble_ctl_at "AT+CONINFO?"
             ;;
         RESET)
-            ble_reset
+            ble_ctl_at "AT+RESET"
             ;;
-        ROLE)
-            ble_set_role "$1"
+        RESTORE)
+            ble_ctl_at "AT+RESTORE"
+            ;;
+        SLEEP)
+            ble_ctl_at "AT+SLEEP"
+            ;;
+        SEND|TX)
+            ble_ctl_data "$*"
+            ;;
+        RECEIVE|RX)
+            ble_ctl_rx "$1"
+            ;;
+        SCAN)
+            ble_ctl_scan "$1"
+            ;;
+        LIST)
+            strings "$BLE_CTL_SCAN_CACHE" 2>/dev/null | sort | uniq
+            ;;
+        MONITOR|WATCH)
+            ble_ctl_monitor
+            ;;
+        HEX)
+            ble_ctl_hex "$1"
+            ;;
+        WAIT_PRESENT)
+            ble_ctl_wait present "$1"
+            ;;
+        WAIT_NOT_PRESENT)
+            ble_ctl_wait absent "$1"
+            ;;
+        WAIT)
+            ble_ctl_wait "$@"
+            ;;
+        GATT)
+            ble_ctl_gatt "$@"
+            ;;
+        HELP|help|-h|--help|"")
+            echo "Usage: BLE_CTL <command> [args...]"
+            echo "  GATT SERVER [service_uuid] [read_uuid] [write_uuid]"
+            echo "  ROLE slave|master|observer|mixed"
+            echo "  ADVERTISE on|off|ibeacon"
+            echo "  NAME <name>"
+            echo "  ADVERTISING_DATA <1-25 byte value>"
+            echo "  SEND <data> | RECEIVE [sec]"
+            echo "  SCAN [sec] | WAIT present|absent <text>"
+            echo "  AT <raw AT command>"
             ;;
         *)
-            echo "Unknown command: $command"
-            echo
-            echo "Examples:"
-            echo "  BLE_CTL VERSION"
-            echo "  BLE_CTL ROLE 2"
-            echo "  BLE_CTL OBSERVER"
-            echo "  BLE_CTL CAPTURE /tmp/bt.bin 30"
-            echo "  BLE_CTL SCAN_STRINGS /tmp/bt.bin"
-            echo "  BLE_CTL WAIT_PRESENT BB2"
-            echo "  BLE_CTL WAIT_NOT_PRESENT BB2"
-            echo "  BLE_CTL MONITOR"
+            echo "BLE_CTL: unknown command: $command" >&2
+            BLE_CTL HELP >&2
             return 1
             ;;
     esac
 }
 
-ble_ctl "$@"
+export -f BLE_CTL
+export -f ble_ctl_init ble_ctl_lock ble_ctl_unlock ble_ctl_read_response
+export -f ble_ctl_at ble_ctl_at_hex16_le ble_ctl_data ble_ctl_config_mode ble_ctl_role
+export -f ble_ctl_configure ble_ctl_advertise ble_ctl_adv_data ble_ctl_scan
+export -f ble_ctl_monitor ble_ctl_rx ble_ctl_hex ble_ctl_wait
+export -f ble_ctl_gatt_server ble_ctl_gatt
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    BLE_CTL "$@"
+fi
